@@ -1,10 +1,12 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -47,50 +49,56 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusBadRequest, "Unable to parse from file", err)
 		return
 	}
-	// Extract file type from headers
-	fileType := headers.Header.Get("Content-Type")
 
+	// Extract file type from headers
+	contentType := headers.Header.Get("Content-Type")
+	fileExt := strings.Split(contentType, "/")[1]
+	fmt.Println(fileExt)
 	defer file.Close()
 
-	thumbnailData, err := io.ReadAll(file)
+	thumbnailPath := filepath.Join(cfg.assetsRoot, videoID.String()+"."+fileExt)
+
+	newThumbFile, err := os.Create(thumbnailPath)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Couldn't read data", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create new file", err)
+		return
+	}
+
+	defer newThumbFile.Close()
+
+	_, err = io.Copy(newThumbFile, file)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't save thumbnail", err)
 		return
 	}
 
 	// Encode Thumbnail data in base64 and save it to a string in thumbnailURL
-	encdThumb := base64.StdEncoding.EncodeToString(thumbnailData)
+	//encdThumb := base64.StdEncoding.EncodeToString(thumbnailData)
 
-	dataURL := fmt.Sprintf("data:%s;base64,%s", fileType, encdThumb)
+	//dataURL := fmt.Sprintf("data:%s;base64,%s", fileType, encdThumb)
 
-	oldVideo, err := cfg.db.GetVideo(videoID)
+	video, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't get video", err)
 		return
 	}
 
-	if userID != oldVideo.UserID {
+	if userID != video.UserID {
 		respondWithError(w, http.StatusUnauthorized, "User has no permission to modify video", err)
 		return
 	}
 
 	// Update video metadata
 	//Set new thumbnail url
-	//newThumbURL := fmt.Sprintf("http://localhost:%v/api/thumbnails/%s", cfg.port, videoID)
+	newThumbURL := fmt.Sprintf("http://localhost:%v/assets/%s.%s", cfg.port, videoID, fileExt)
 
-	oldVideo.ThumbnailURL = &dataURL
+	video.ThumbnailURL = &newThumbURL
 
-	err = cfg.db.UpdateVideo(oldVideo)
+	err = cfg.db.UpdateVideo(video)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update video", err)
 		return
 	}
 
-	updatedVideo, err := cfg.db.GetVideo(videoID)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Couldn't get video", err)
-		return
-	}
-
-	respondWithJSON(w, http.StatusOK, updatedVideo)
+	respondWithJSON(w, http.StatusOK, video)
 }
