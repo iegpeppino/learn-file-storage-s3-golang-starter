@@ -1,7 +1,148 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"mime"
 	"net/http"
+	"os"
+
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
+	"github.com/google/uuid"
 )
 
-func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {}
+func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
+
+	const maxUploadSize = int64(1 << 30) // Max 1Gb
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+	err := r.ParseMultipartForm(maxUploadSize)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "File too large", err)
+		return
+	}
+
+	videoID, err := uuid.Parse(r.PathValue("videoID"))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid video url", err)
+		return
+	}
+
+	// Authenticate User
+	tokenStr, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Couldn't get bearer token", err)
+		return
+	}
+
+	// Validate user
+	userID, err := auth.ValidateJWT(tokenStr, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized user", err)
+		return
+	}
+
+	video, err := cfg.db.GetVideo(videoID)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve video data", err)
+		return
+	}
+
+	if video.UserID != userID {
+		respondWithError(w, http.StatusUnauthorized, "User is not video's owner", err)
+		return
+	}
+
+	file, fileHeader, err := r.FormFile("video")
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't form video file", err)
+		return
+	}
+
+	// Close file at end of function
+	defer file.Close()
+
+	// Extract content type from file header
+	contenType := fileHeader.Header.Get("Content-Type")
+
+	// Parse media type
+	mediaType, _, err := mime.ParseMediaType(contenType)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid media type", err)
+		return
+	}
+
+	// Validate the mediatype
+	if mediaType != "video/mp4" {
+		respondWithError(w, http.StatusUnsupportedMediaType, "Only video/mp4 is supported", nil)
+		return
+	}
+
+	// Save uploaded file to temp file on sys
+	tempFile, err := os.CreateTemp("", "tubely-upload.mp4")
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create temp file", err)
+		return
+	}
+
+	defer tempFile.Close()
+
+	defer os.Remove(tempFile.Name())
+
+	//Copy contents from wire to the temp file
+	_, err = io.Copy(tempFile, file)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't copy file", err)
+		return
+	}
+
+	// Reset tempFile pointer to beggining (to read again from beggining)
+	_, err = tempFile.Seek(0, io.SeekStart)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't reset pointer", err)
+		return
+	}
+
+	// Creating random name for video file
+	// Making random bytes
+	randBytes := make([]byte, 32)
+	// Generating random data
+	_, err = rand.Read(randBytes)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to generate bytes", err)
+		return
+	}
+
+	videoCode := hex.EncodeToString(randBytes) + ".mp4"
+
+	params := s3.PutObjectInput{
+		Bucket:      &cfg.s3Bucket,
+		Key:         &videoCode,
+		Body:        tempFile,
+		ContentType: &mediaType,
+	}
+
+	_, err = cfg.s3Client.PutObject(r.Context(), &params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't save video", err)
+		return
+	}
+
+	newVideoURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, videoCode)
+
+	fmt.Println(newVideoURL)
+	video.VideoURL = &newVideoURL
+
+	err = cfg.db.UpdateVideo(video)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't update video", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, map[string]string{
+		"video_url": *video.VideoURL,
+	})
+}
