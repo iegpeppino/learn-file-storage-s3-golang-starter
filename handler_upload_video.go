@@ -120,6 +120,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	defer os.Remove(fastFilePath)
 
 	defer fastFilePtr.Close()
+
 	// With file.Open() this step is not needed  the file pointer already starts at beggining
 	// Reset tempFile pointer to beggining (to read again from beggining)
 	// _, err = fastFilePtr.Seek(0, io.SeekStart)
@@ -168,7 +169,9 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	newVideoURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, key)
+	// Updating video URL to be pre-signed
+
+	newVideoURL := fmt.Sprintf("%s,%s", cfg.s3Bucket, key)
 	video.VideoURL = &newVideoURL
 
 	err = cfg.db.UpdateVideo(video)
@@ -177,7 +180,11 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, map[string]string{
-		"video_url": *video.VideoURL,
-	})
+	video, err = cfg.dbVideoToSignedVideo(video)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldnt generate presigned videoURL", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, video)
 }
