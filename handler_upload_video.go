@@ -87,31 +87,48 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Save uploaded file to temp file on sys
-	tempFile, err := os.CreateTemp("", "tubely-upload.mp4")
+	originalTempFile, err := os.CreateTemp("", "tubely-upload.mp4")
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't create temp file", err)
 		return
 	}
 
-	defer tempFile.Close()
+	defer originalTempFile.Close()
 
-	defer os.Remove(tempFile.Name())
+	defer os.Remove(originalTempFile.Name())
 
 	//Copy contents from wire to the temp file
-	_, err = io.Copy(tempFile, file)
+	_, err = io.Copy(originalTempFile, file)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't copy file", err)
 		return
 	}
 
-	// Reset tempFile pointer to beggining (to read again from beggining)
-	_, err = tempFile.Seek(0, io.SeekStart)
+	// Create and upload fast file to S3
+	fastFilePath, err := processVideoForFastStart(originalTempFile.Name())
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Couldn't reset pointer", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create fast file path", err)
 		return
 	}
 
-	aspectRatioNum, err := getVideoAspectRatio(tempFile.Name())
+	fastFilePtr, err := os.Open(fastFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get FastFile pointer", err)
+		return
+	}
+
+	defer os.Remove(fastFilePath)
+
+	defer fastFilePtr.Close()
+	// With file.Open() this step is not needed  the file pointer already starts at beggining
+	// Reset tempFile pointer to beggining (to read again from beggining)
+	// _, err = fastFilePtr.Seek(0, io.SeekStart)
+	// if err != nil {
+	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't reset pointer", err)
+	// 	return
+	// }
+
+	aspectRatioNum, err := getVideoAspectRatio(fastFilePtr.Name())
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't read video metadata", err)
 		return
@@ -141,7 +158,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	params := s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &key,
-		Body:        tempFile,
+		Body:        fastFilePtr,
 		ContentType: &mediaType,
 	}
 
