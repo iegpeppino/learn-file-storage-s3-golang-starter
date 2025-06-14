@@ -18,6 +18,11 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	const maxUploadSize = int64(1 << 30) // Max 1Gb
 
+	aspectRatioDict := map[string]string{
+		"19:6": "landscape",
+		"6:19": "portrait",
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 	err := r.ParseMultipartForm(maxUploadSize)
 	if err != nil {
@@ -106,6 +111,12 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	aspectRatioNum, err := getVideoAspectRatio(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't read video metadata", err)
+		return
+	}
+
 	// Creating random name for video file
 	// Making random bytes
 	randBytes := make([]byte, 32)
@@ -118,9 +129,18 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	videoCode := hex.EncodeToString(randBytes) + ".mp4"
 
+	var s3Prefix string
+	if prefix, ok := aspectRatioDict[aspectRatioNum]; ok {
+		s3Prefix = prefix
+	} else {
+		s3Prefix = "other"
+	}
+
+	key := fmt.Sprintf("%s/%s", s3Prefix, videoCode)
+
 	params := s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
-		Key:         &videoCode,
+		Key:         &key,
 		Body:        tempFile,
 		ContentType: &mediaType,
 	}
@@ -131,9 +151,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	newVideoURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, videoCode)
-
-	fmt.Println(newVideoURL)
+	newVideoURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, key)
 	video.VideoURL = &newVideoURL
 
 	err = cfg.db.UpdateVideo(video)

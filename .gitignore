@@ -4,3 +4,4 @@ out
 assets/
 samples/
 handler_get_thumbnail.txt
+aws/
