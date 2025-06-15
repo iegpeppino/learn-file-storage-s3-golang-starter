@@ -169,9 +169,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Updating video URL to be pre-signed
-
-	newVideoURL := fmt.Sprintf("%s,%s", cfg.s3Bucket, key)
+	// Update URL with distribution link
+	newVideoURL := fmt.Sprintf("%s/%s", cfg.s3CfDistribution, key)
 	video.VideoURL = &newVideoURL
 
 	err = cfg.db.UpdateVideo(video)
@@ -180,11 +179,12 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	video, err = cfg.dbVideoToSignedVideo(video)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Couldnt generate presigned videoURL", err)
-		return
-	}
+	// Not used anymore after Cloudfront service was set up
+	// video, err = cfg.dbVideoToSignedVideo(video)
+	// if err != nil {
+	// 	respondWithError(w, http.StatusInternalServerError, "Couldnt generate presigned videoURL", err)
+	// 	return
+	// }
 
 	respondWithJSON(w, http.StatusOK, video)
 }

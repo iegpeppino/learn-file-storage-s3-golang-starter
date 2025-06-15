@@ -5,3 +5,4 @@ assets/
 samples/
 handler_get_thumbnail.txt
 aws/
+handler_sign_video.txt
